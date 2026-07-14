@@ -1,154 +1,179 @@
 """
-Full pipeline: ONE Gemini call for the whole video -> per round, fetch images,
-generate percentage split, build all audio/caption segments, assemble the
-timeline -> compose final video -> upload with scheduling.
+Orchestrator — 5-stage timeline-driven pipeline.
+
+Stage 1  timeline_builder  → flat scene list (pure data, no audio)
+Stage 2  audio_builder     → master.wav + master_timing.json
+Stage 3  (timing embedded in Stage 2 output — no separate stage)
+Stage 4  subtitle_builder  → master.ass
+Stage 5  video_renderer    → final_video.mp4
 
 Run with: python main.py
 """
+import json
 import os
 import sys
+
+import analytics
 import config
-import script_gen
-import percentage_gen
-import image_fetch
-import voiceover
-import visual_gen
-import sound_fx
-import video_composer
+import history
 import question_tracker
 import scheduler
+import script_gen
+import timeline_builder
+import audio_builder
+import subtitle_builder
+import video_renderer
 import youtube_upload
-import history
-import analytics
 
 
-def _color_map(colored_words: list) -> dict:
-    return {cw["word"].strip().lower(): cw["color"] for cw in colored_words}
+# ── Validation ────────────────────────────────────────────────────────────────
+
+def _validate_scenes(scenes: list):
+    """
+    Hard abort if any required asset is missing before audio generation.
+    Checks every frame image exists and is non-trivial.
+    Subtitle/audio assets are validated by their respective stages.
+    """
+    print("  [validate] Checking frame images...")
+    for i, scene in enumerate(scenes):
+        path = scene.get("frame", "")
+        if not os.path.isfile(path):
+            raise RuntimeError(f"[VALIDATE] Missing frame for scene {i} "
+                               f"({scene.get('id', '?')}): {path}")
+        if os.path.getsize(path) < 512:
+            raise RuntimeError(f"[VALIDATE] Frame too small (corrupt?): {path}")
+
+    # Verify every narration-carrying scene has text
+    for scene in scenes:
+        if scene.get("narration") is not None and not scene["narration"].strip():
+            raise RuntimeError(f"[VALIDATE] Empty narration in scene {scene['id']}")
+
+    print(f"  [validate] ✓ {len(scenes)} scenes, all frames present.")
 
 
-def build_round_timeline(round_data: dict, round_number: int, out_dir: str) -> list:
-    base = os.path.join(out_dir, f"round_{round_number}")
-    timeline = []
+def _validate_timing(timing_json_path: str):
+    """Verify master_timing.json is complete and monotonic."""
+    with open(timing_json_path, encoding="utf-8") as f:
+        data = json.load(f)
 
-    option_a, option_b = round_data["option_a"], round_data["option_b"]
+    scenes   = data["scenes"]
+    prev_end = 0.0
+    errors   = []
 
-    # 1. "Would you rather" - plain background
-    plain_img = visual_gen.build_plain_frame(f"{base}_plain.png")
-    wyr_audio, wyr_timings = voiceover.generate_voiceover("Would you rather...", f"{base}_wyr.mp3")
-    timeline.append({
-        "image": plain_img, "audio": wyr_audio,
-        "caption": {"word_timings": wyr_timings, "anchor": "center", "color_map": {}},
-    })
+    for scene in scenes:
+        gs = scene.get("global_start")
+        ge = scene.get("global_end")
+        if gs is None or ge is None:
+            errors.append(f"  Scene {scene['id']} missing global timestamps")
+            continue
+        if ge < gs:
+            errors.append(f"  Scene {scene['id']} has negative duration "
+                          f"({gs:.3f} → {ge:.3f})")
+        if gs < prev_end - 0.001:  # 1ms tolerance
+            errors.append(f"  Scene {scene['id']} overlaps previous "
+                          f"(gap {gs - prev_end:.4f}s)")
+        prev_end = ge
 
-    # Fetch both images, build the split frame (reused across the next few clips)
-    img_a_path = image_fetch.fetch_image(option_a["image_query"], f"{base}_img_a.jpg")
-    img_b_path = image_fetch.fetch_image(option_b["image_query"], f"{base}_img_b.jpg")
-    split_frame, color_pair = visual_gen.build_split_frame(img_a_path, img_b_path, f"{base}_split.png")
+    if errors:
+        raise RuntimeError("[VALIDATE] Timing errors:\n" + "\n".join(errors))
 
-    # 2. Option A - captions anchored to top half
-    a_audio, a_timings = voiceover.generate_voiceover(option_a["text"], f"{base}_a.mp3")
-    timeline.append({
-        "image": split_frame, "audio": a_audio,
-        "caption": {"word_timings": a_timings, "anchor": "top_half", "color_map": _color_map(option_a["colored_words"])},
-    })
+    print(f"  [validate] ✓ Timing monotonic. Total: {data['total_duration']:.2f}s")
 
-    # "or" bridge - no caption, visual "OR" badge already on screen
-    or_audio, _ = voiceover.generate_voiceover("or", f"{base}_or.mp3")
-    timeline.append({"image": split_frame, "audio": or_audio, "caption": None})
 
-    # 3. Option B - captions anchored to bottom half
-    b_audio, b_timings = voiceover.generate_voiceover(option_b["text"], f"{base}_b.mp3")
-    timeline.append({
-        "image": split_frame, "audio": b_audio,
-        "caption": {"word_timings": b_timings, "anchor": "bottom_half", "color_map": _color_map(option_b["colored_words"])},
-    })
-
-    # 4. Timer - tick sound over the same split frame, no caption
-    tick_audio = sound_fx.generate_tick_sound(f"{base}_tick.mp3")
-    timeline.append({"image": split_frame, "audio": tick_audio, "caption": None})
-
-    # 5. Reveal - percentages baked into the frame, pick + reason spoken over it
-    split = percentage_gen.generate_split()
-    reveal_frame = visual_gen.build_reveal_frame(img_a_path, img_b_path, split, f"{base}_reveal.png", color_pair=color_pair)
-
-    picked = option_a if round_data["my_pick"] == "a" else option_b
-    reveal_text = f"I'm going with {picked['text']}. {round_data['pick_reason']}"
-    reveal_audio, reveal_timings = voiceover.generate_voiceover(reveal_text, f"{base}_reveal.mp3")
-    timeline.append({
-        "image": reveal_frame, "audio": reveal_audio,
-        "caption": {"word_timings": reveal_timings, "anchor": "center", "color_map": {}},
-    })
-
-    return timeline
-
+# ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def run_one(index: int):
     print(f"\n=== Video {index + 1} ===")
     out_dir = os.path.join(config.OUTPUT_DIR, f"video_{index}")
     os.makedirs(out_dir, exist_ok=True)
 
-    print("Checking past video performance for learnings...")
-    performance_notes = analytics.get_performance_notes()
+    # ── Analytics (non-blocking) ───────────────────────────────────────────────
+    try:
+        analytics.get_performance_notes()
+    except Exception as e:
+        print(f"  Analytics skipped ({e})")
 
-    print("Generating full video script (ONE Gemini call)...")
+    # ── Script generation (one Gemini call) ───────────────────────────────────
+    print("Generating script (ONE Gemini call)...")
     used_questions = question_tracker.load_used_questions()
-    script_data = script_gen.generate_video_script(avoid_questions=used_questions)
+    script_data    = script_gen.generate_video_script(avoid_questions=used_questions)
 
-    # Drop any round that slipped through as an exact repeat, rather than
-    # calling Gemini again (keeps this to one call per video as intended)
     fresh_rounds = [
         r for r in script_data["rounds"]
-        if not question_tracker.is_duplicate(r["option_a"]["text"], r["option_b"]["text"], used_questions)
+        if not question_tracker.is_duplicate(
+            r["option_a"]["text"], r["option_b"]["text"], used_questions
+        )
     ]
     if len(fresh_rounds) < len(script_data["rounds"]):
-        print(f"Dropped {len(script_data['rounds']) - len(fresh_rounds)} duplicate round(s).")
+        dropped = len(script_data["rounds"]) - len(fresh_rounds)
+        print(f"  Dropped {dropped} duplicate round(s).")
     if not fresh_rounds:
-        print("All generated rounds were duplicates - aborting this run.")
+        print("  All rounds are duplicates — aborting.")
         sys.exit(1)
 
-    full_timeline = []
-    for i, round_data in enumerate(fresh_rounds):
-        print(f"Building round {i + 1}/{len(fresh_rounds)}...")
-        full_timeline.extend(build_round_timeline(round_data, i + 1, out_dir))
+    # Patch script_data with deduplicated rounds
+    script_data["rounds"] = fresh_rounds
 
-    # Closing loop bumper - plain background
-    print("Building closing bumper...")
-    bumper_img = visual_gen.build_plain_frame(os.path.join(out_dir, "bumper_plain.png"))
-    bumper_audio, bumper_timings = voiceover.generate_voiceover(
-        script_data["closing_bumper"], os.path.join(out_dir, "bumper.mp3")
-    )
-    full_timeline.append({
-        "image": bumper_img, "audio": bumper_audio,
-        "caption": {"word_timings": bumper_timings, "anchor": "center", "color_map": {}},
-    })
+    # ── Stage 1: Timeline ──────────────────────────────────────────────────────
+    print("\n[Stage 1] Building timeline (images + frames)...")
+    timeline = timeline_builder.build_timeline(script_data, out_dir)
+    scenes   = timeline["scenes"]
 
-    print("Composing final video...")
+    # Save raw timeline for inspection/debugging
+    timeline_path = os.path.join(out_dir, "timeline.json")
+    with open(timeline_path, "w", encoding="utf-8") as f:
+        json.dump(timeline, f, indent=2)
+
+    _validate_scenes(scenes)
+
+    # ── Stage 2: Master audio ──────────────────────────────────────────────────
+    print("\n[Stage 2] Building master audio track...")
+    timing_path = audio_builder.build_master_audio(scenes, out_dir)
+    # Note: scenes list is mutated in-place with global_start/end/word_timings
+
+    # ── Stage 3: Validate timing ───────────────────────────────────────────────
+    print("\n[Stage 3] Validating timing...")
+    _validate_timing(timing_path)
+
+    # ── Stage 4: Subtitles ─────────────────────────────────────────────────────
+    print("\n[Stage 4] Building subtitles...")
+    ass_path = subtitle_builder.build_subtitles(timing_path, out_dir)
+
+    # ── Stage 5: Render ────────────────────────────────────────────────────────
+    print("\n[Stage 5] Rendering final video...")
+    master_wav  = os.path.join(out_dir, "master.wav")
     final_video = os.path.join(out_dir, "final_video.mp4")
-    video_composer.compose_video(full_timeline, final_video)
+    video_renderer.render_video(timing_path, master_wav, ass_path, final_video)
 
+    # ── Review gate ───────────────────────────────────────────────────────────
     if config.MANUAL_REVIEW_GATE:
-        print(f"\nReview before upload: {final_video}")
-        print(f"Title: {script_data['title']}")
-        input("Press Enter to continue with upload, or Ctrl+C to stop...")
+        print(f"\nReview: {final_video}")
+        print(f"Title:  {script_data['title']}")
+        input("Press Enter to upload, Ctrl+C to abort...")
 
-    print("Scheduling and uploading...")
+    # ── Upload ─────────────────────────────────────────────────────────────────
+    print("\nScheduling and uploading...")
     publish_slot = scheduler.get_next_publish_slot()
-    publish_iso = publish_slot.strftime("%Y-%m-%dT%H:%M:%SZ")
+    publish_iso  = publish_slot.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     video_id = youtube_upload.upload_video(
-        final_video, script_data["title"], script_data["description"], script_data["tags"], publish_iso
+        final_video, script_data["title"], script_data["description"],
+        script_data["tags"], publish_iso,
     )
 
     for r in fresh_rounds:
         question_tracker.save_used_question(r["option_a"]["text"], r["option_b"]["text"])
-    history.save_entry(video_id, "Would You Rather", fresh_rounds[0]["option_a"]["text"], script_data["title"], publish_iso)
-    print("Done!")
+    history.save_entry(
+        video_id, "Would You Rather",
+        fresh_rounds[0]["option_a"]["text"], script_data["title"], publish_iso,
+    )
+    print(f"\nDone! Uploaded: https://youtu.be/{video_id}  (scheduled {publish_iso})")
 
 
 def main():
     for i in range(config.VIDEOS_PER_RUN):
         run_one(i)
-    print("\nAll videos processed for this run.")
+    print("\nAll videos processed.")
 
 
 if __name__ == "__main__":
