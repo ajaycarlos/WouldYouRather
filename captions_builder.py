@@ -111,7 +111,7 @@ def add_segment(
         # \\fs overrides the style font size per cue; \\fad adds a 60 ms fade
         lines.append(
             f"Dialogue: 0,{start},{end},Default,,0,0,0,,"
-            f"{{\\pos(540,{y})\\fs{fs}\\fad(60,60)}}{text}\n"
+            f"{{\\an5\\pos(540,{y})\\fs{fs}\\fad(60,60)}}{text}\n"
         )
 
 
