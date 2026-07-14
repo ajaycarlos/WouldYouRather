@@ -34,10 +34,10 @@ BG_COLOR = (20, 20, 28)
 WHITE    = (255, 255, 255)
 
 # ── Image box inside each 1080×960 half ───────────────────────────────────
-IMG_W        = 860
-IMG_H        = 500                           # shorter → bigger strips for % text
-IMG_X        = (W - IMG_W) // 2              # 110 px side margins
-IMG_PAD_V    = (HALF_H - IMG_H) // 2        # 230 px strips top & bottom in each half
+IMG_W        = 780                           # 150 px side margin each side — clearly inset
+IMG_H        = 480                           # slightly shorter → bigger colour strips for % text
+IMG_X        = (W - IMG_W) // 2             # 150 px side margins
+IMG_PAD_V    = (HALF_H - IMG_H) // 2       # strips top & bottom in each half
 BORDER_W     = 8                             # white border thickness around image
 
 # ── OR badge ──────────────────────────────────────────────────────────────
@@ -71,8 +71,11 @@ COLOR_PAIRS = [
 def _font(size: int) -> ImageFont.FreeTypeFont:
     try:
         return ImageFont.truetype(config.FONT_PATH, size)
-    except OSError:
-        return ImageFont.load_default()
+    except OSError as e:
+        raise RuntimeError(
+            f"Cannot load font '{config.FONT_PATH}': {e}\n"
+            "Delete Poppins-Bold.ttf (if corrupt) and re-run — config.py will re-download it."
+        ) from e
 
 
 def _draw_centered(draw, text, cx, cy, font, fill, stroke_width=0, stroke_fill=None):
@@ -96,9 +99,20 @@ def build_plain_frame(out_path: str) -> str:
     return out_path
 
 
-def _fit_image(path: str, size: tuple) -> Image.Image:
+def _fit_image(path: str, size: tuple, bg_color: tuple = (20, 20, 28)) -> Image.Image:
+    """
+    Resize the image to fill `size` while preserving aspect ratio.
+    Any remaining space (letterbox / pillarbox) is filled with `bg_color`
+    so portrait images are never cropped or distorted.
+    Uses ImageOps.contain instead of ImageOps.fit.
+    """
     img = Image.open(path).convert("RGB")
-    return ImageOps.fit(img, size, Image.LANCZOS)
+    img.thumbnail(size, Image.LANCZOS)          # scale down, never up, keep ratio
+    canvas = Image.new("RGB", size, bg_color)
+    offset_x = (size[0] - img.width)  // 2
+    offset_y = (size[1] - img.height) // 2
+    canvas.paste(img, (offset_x, offset_y))
+    return canvas
 
 
 def _draw_half(draw: ImageDraw.Draw, canvas: Image.Image,
@@ -106,7 +120,7 @@ def _draw_half(draw: ImageDraw.Draw, canvas: Image.Image,
     """
     Draw one half (top_y … top_y+HALF_H) of the canvas:
     • flood-fill the half with bg_color
-    • paste the image centred inside it
+    • paste the image centred inside it (aspect-ratio preserved, letterbox = bg_color)
     • draw a white border around the image box
     """
     # Coloured background for this half
@@ -116,8 +130,9 @@ def _draw_half(draw: ImageDraw.Draw, canvas: Image.Image,
     ix = IMG_X
     iy = top_y + IMG_PAD_V
 
-    # Paste photo
-    photo = _fit_image(image_path, (IMG_W, IMG_H))
+    # Paste photo — letterbox fill matches the half's background colour so
+    # portrait images don't show black bars; aspect ratio is always preserved
+    photo = _fit_image(image_path, (IMG_W, IMG_H), bg_color=bg_color)
     canvas.paste(photo, (ix, iy))
 
     # White border (drawn OVER the image edges so it sits on top)
