@@ -68,7 +68,14 @@ def compose_video(timeline: list, final_out: str) -> str:
             f.write(f"file '{os.path.abspath(cf)}'\n")
 
     raw_video = os.path.join(TEMP_DIR, "raw.mp4")
-    _run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", raw_video])
+    # Re-encode audio (not copy) so AAC encoder-delay doesn't accumulate
+    # across clip boundaries and cause silent gaps / muting.
+    _run([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-af", "aresample=async=1",
+        raw_video,
+    ])
 
     ass_path = os.path.join(TEMP_DIR, "captions.ass")
     captions_builder.write_ass_file(ass_lines, ass_path)

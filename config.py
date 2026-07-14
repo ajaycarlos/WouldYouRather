@@ -23,7 +23,7 @@ MANUAL_REVIEW_GATE = os.getenv("MANUAL_REVIEW_GATE", "False").lower() == "true"
 PUBLISH_HOUR_UTC = int(os.getenv("PUBLISH_HOUR_UTC", "16"))
 
 TIMER_SECONDS = float(os.getenv("TIMER_SECONDS", "3.0"))
-FONT_PATH = os.getenv("FONT_PATH", os.path.expanduser("~/.fonts/Poppins-Bold.ttf"))
+FONT_PATH = os.path.expanduser(os.getenv("FONT_PATH", "~/.fonts/Poppins-Bold.ttf"))
 
 OUTPUT_DIR = "output"
 

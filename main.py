@@ -43,7 +43,7 @@ def build_round_timeline(round_data: dict, round_number: int, out_dir: str) -> l
     # Fetch both images, build the split frame (reused across the next few clips)
     img_a_path = image_fetch.fetch_image(option_a["image_query"], f"{base}_img_a.jpg")
     img_b_path = image_fetch.fetch_image(option_b["image_query"], f"{base}_img_b.jpg")
-    split_frame = visual_gen.build_split_frame(img_a_path, img_b_path, f"{base}_split.png")
+    split_frame, color_pair = visual_gen.build_split_frame(img_a_path, img_b_path, f"{base}_split.png")
 
     # 2. Option A - captions anchored to top half
     a_audio, a_timings = voiceover.generate_voiceover(option_a["text"], f"{base}_a.mp3")
@@ -69,7 +69,7 @@ def build_round_timeline(round_data: dict, round_number: int, out_dir: str) -> l
 
     # 5. Reveal - percentages baked into the frame, pick + reason spoken over it
     split = percentage_gen.generate_split()
-    reveal_frame = visual_gen.build_reveal_frame(img_a_path, img_b_path, split, f"{base}_reveal.png")
+    reveal_frame = visual_gen.build_reveal_frame(img_a_path, img_b_path, split, f"{base}_reveal.png", color_pair=color_pair)
 
     picked = option_a if round_data["my_pick"] == "a" else option_b
     reveal_text = f"I'm going with {picked['text']}. {round_data['pick_reason']}"
