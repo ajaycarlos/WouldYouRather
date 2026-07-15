@@ -21,7 +21,7 @@ MANUAL_REVIEW_GATE = os.getenv("MANUAL_REVIEW_GATE", "False").lower() == "true"
 
 # Offset from channel 1 (08:00 UTC) and channel 2 (12:00 UTC) so all three
 # don't contend for CPU/network if their runs overlap.
-PUBLISH_HOUR_UTC = int(os.getenv("PUBLISH_HOUR_UTC", "16"))
+PUBLISH_HOUR_UTC = int(os.getenv("PUBLISH_HOUR_UTC", "8"))
 
 TIMER_SECONDS = float(os.getenv("TIMER_SECONDS", "2.0"))
 
