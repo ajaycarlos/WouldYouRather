@@ -29,6 +29,7 @@ COLOR_HEX = {   # ASS BGR order (\&HBBGGRR\&)
     "white":  "&HFFFFFF&",
 }
 DEFAULT_COLOR = "&HFFFFFF&"
+HIGHLIGHT_COLOR = "&H00FFFF&"  # standard yellow
 
 # visual_gen canvas: 1080×1920, HALF_H=960, IMG_H=480, IMG_PAD_V=240
 # Top colour strip:    y ∈ [0,   240]  → centre y = 120
@@ -38,19 +39,19 @@ DEFAULT_COLOR = "&HFFFFFF&"
 # Bottom colour strip: y ∈ [1680,1920] → centre y = 1800
 ANCHOR_Y = {
     "center":      960,   # plain dark background — dead centre
-    "top_half":    190,   # colour strip above Option A image
-    "bottom_half": 1730,  # colour strip below Option B image
+    "top_half":    120,   # colour strip above Option A image
+    "bottom_half": 1800,  # colour strip below Option B image
 }
 ANCHOR_FS = {
     "center":      150,   # big impact on plain dark screen
     "top_half":    115,   # punchy inside colour strip
     "bottom_half": 115,
 }
-# Hard cap at 2 words per cue — maximum punch, maximum retention
+# Group subtitles according to natural speech (Issue 5 fix)
 ANCHOR_MAX_WORDS = {
-    "center":      2,
-    "top_half":    2,
-    "bottom_half": 2,
+    "center":      5,
+    "top_half":    5,
+    "bottom_half": 5,
 }
 
 ASS_HEADER = """\
@@ -62,7 +63,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Fredoka,110,&HFFFFFF&,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,9,0,5,40,40,40,1
+Style: Default,Lilita One,110,&HFFFFFF&,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,0,5,40,40,40,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -83,13 +84,8 @@ def _clean(word: str) -> str:
     return word.strip().strip('.,!?"\'').lower()
 
 
-def _display(word: str, color_map: dict) -> str:
-    clean = _clean(word)
-    color = color_map.get(clean)
-    text  = word.strip().upper()
-    if color and color in COLOR_HEX:
-        return f"{{\\c{COLOR_HEX[color]}}}{text}{{\\c{DEFAULT_COLOR}}}"
-    return text
+def _clean(word: str) -> str:
+    return word.strip().strip('.,!?"\'').lower()
 
 
 def _smart_chunk(word_timings: list, max_words: int,
@@ -135,16 +131,44 @@ def _smart_chunk(word_timings: list, max_words: int,
 
 def _cue(y: int, fs: int, start: float, end: float,
          words: list, color_map: dict) -> str:
-    text = " ".join(_display(w["word"], color_map) for w in words)
-    # Ensure cue has at least 80ms of display time
-    if end - start < 0.08:
-        end = start + 0.08
-    # Pop animation:
-    #   Start at 55% scale (clearly smaller — viewer sees the growth)
-    #   Animate to 108% in 200ms (overshoot = elastic "boing" feel)
-    #   libass \t(t1_ms, t2_ms, tags) — handled by renderer, zero encode cost
-    #   No accel param → linear; overshoot to 108 gives perceived snap
-    pop = r"{\fscx55\fscy55\t(0,200,\fscx108\fscy108)}"
+    
+    # Ensure cue is long enough for the animation to play out (min 0.20s total)
+    if end - start < 0.20:
+        end = start + 0.20
+
+    # Pop animation with spring back (Issue 7 and 4 fix)
+    # Total animation shouldn't exceed half the cue's duration (so it reaches 100% scale quickly)
+    cue_dur_ms = int((end - start) * 1000)
+    anim_time = min(150, int(cue_dur_ms * 0.5))
+    t1 = int(anim_time * 0.4)
+    t2 = anim_time
+    # scale starts at 40%, jumps to 110%, settles at 100%
+    pop = f"{{\\fscx40\\fscy40\\t(0,{t1},\\fscx110\\fscy110)\\t({t1},{t2},\\fscx100\\fscy100)}}"
+
+    parts = []
+    for w in words:
+        w_start_ms = max(0, int((w["start"] - start) * 1000))
+        w_end_ms   = max(0, int((w["end"] - start) * 1000))
+
+        # Check if the word has a special static color
+        clean = _clean(w["word"])
+        special_color = color_map.get(clean)
+        display = w["word"].strip().upper()
+
+        if special_color and special_color in COLOR_HEX:
+            target_color = COLOR_HEX[special_color]
+        else:
+            target_color = HIGHLIGHT_COLOR # yellow default highlight
+
+        # Word-level highlight: turn target color when spoken, back to white when done
+        # A smooth 50ms fade feels much more premium
+        fade_in_end = min(w_start_ms + 50, w_end_ms)
+        fade_out_end = w_end_ms + 50
+        
+        highlight = f"{{\\c{DEFAULT_COLOR}\\t({w_start_ms},{fade_in_end},\\c{target_color})\\t({w_end_ms},{fade_out_end},\\c{DEFAULT_COLOR})}}"
+        parts.append(f"{highlight}{display}")
+
+    text = " ".join(parts)
     return (
         f"Dialogue: 0,{_ts(start)},{_ts(end)},Default,,0,0,0,,"
         f"{{\\an5\\pos(540,{y})\\fs{fs}}}{pop}{text}\n"
