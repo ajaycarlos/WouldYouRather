@@ -126,6 +126,10 @@ def _build_filtergraph(groups: list, ass_escaped: str,
     # Step 3 — burn subtitles with fontsdir so libass finds bundled font
     fd = f":fontsdir='{fonts_escaped}'" if fonts_escaped else ""
     lines.append(f"[vcombined]ass='{ass_escaped}'{fd}[vout]")
+    
+    # Step 4 — Mix BGM (input n+1) with master.wav (input n)
+    lines.append(f"[{n}:a][{n+1}:a]amix=inputs=2:duration=first[aout]")
+    
     return ";\n".join(lines)
 
 
@@ -149,7 +153,12 @@ def render_video(timing_json_path: str, master_wav: str, master_ass: str,
         cmd += ["-loop", "1", "-framerate", "30",
                 "-t", str(grp["duration"]),
                 "-i", os.path.abspath(grp["frame"])]
+                
     cmd += ["-i", os.path.abspath(master_wav)]
+    
+    # Tense synth drone BGM (brown noise, heavy lowpass)
+    bgm_graph = "anoisesrc=color=brown,lowpass=f=200,volume=0.3"
+    cmd += ["-f", "lavfi", "-i", bgm_graph]
 
     # ── Filtergraph ────────────────────────────────────────────────────────────
     # ASS filter with fontsdir so libass finds our bundled Fredoka font
@@ -169,7 +178,7 @@ def render_video(timing_json_path: str, master_wav: str, master_ass: str,
     cmd += [
         "-filter_complex_script", filter_file,
         "-map", "[vout]",
-        "-map", f"{n}:a",
+        "-map", "[aout]",
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
