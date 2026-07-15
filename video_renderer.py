@@ -1,24 +1,21 @@
 """
-Stage 5 — Video Renderer
+Stage 5 — Video Renderer (with Dynamic Transitions)
 
-Single-pass FFmpeg render. No clip encoding. No concat demuxer.
-No PTS discontinuities. No encoder-delay accumulation.
+Single-pass FFmpeg render with xfade transitions between scene groups.
 
-Inputs:
-  - master_timing.json  (scene list with global_start / global_end per scene)
-  - master.wav          (single continuous audio track)
-  - master.ass          (single subtitle file with globally-correct timestamps)
-  - PNG frames          (one per scene, referenced by scene["frame"])
+Transition strategy (CPU-efficient — no zoompan):
+  - Consecutive scenes sharing the same frame are merged into one segment.
+    This reduces 19 individual clips to ~10 grouped segments.
+  - xfade transitions are applied between segments where the frame changes:
+      plain  → split  : "fade"       0.20s  (split screen appears)
+      split  → reveal : "fadewhite"  0.15s  (flash then percentages revealed)
+      reveal → plain  : "fadeblack"  0.20s  (clean break between rounds)
+  - "fade", "fadeblack", "fadewhite" are the lightest xfade modes — pure
+    alpha blend, no pixel remapping. Negligible CPU overhead.
 
-Strategy:
-  For each scene, loop its static image for exactly (global_end - global_start)
-  seconds. Chain all image streams through FFmpeg's concat VIDEO FILTER
-  (not the concat demuxer — the filter produces a single continuous PTS
-  timeline with zero discontinuities). Map master.wav as the audio stream.
-  Burn master.ass as a video filter INSIDE the filtergraph.
-
-  The filter script is written to a temp file to avoid shell argument
-  length limits for videos with many scenes.
+Audio stays as master.wav (unchanged). The total transition duration borrowed
+(~1.5s) means the last frame holds for that long after audio ends — on a
+looping Short this is invisible.
 """
 import json
 import os
@@ -32,71 +29,147 @@ def _run(cmd: list, label: str = ""):
         raise RuntimeError(f"FFmpeg error{tag}:\n{result.stderr[-4000:]}")
 
 
-def render_video(timing_json_path: str, master_wav: str, master_ass: str,
-                 final_out: str) -> str:
+def _pick_transition(from_id: str, to_id: str) -> tuple:
     """
-    Renders the final video in one FFmpeg pass.
-    Returns path to final_out.
+    Returns (xfade_name, duration_seconds) for the boundary between two scenes.
+    Kept to 3 fast alpha-blend modes only — no pixel-remap filters.
     """
-    with open(timing_json_path, encoding="utf-8") as f:
-        data = json.load(f)
+    from_reveal = "reveal" in from_id
+    from_plain  = ("wyr" in from_id) or ("outro" in from_id)
+    to_split    = "option" in to_id or "or" in to_id or "tick" in to_id
+    to_reveal   = "reveal" in to_id
+    to_plain    = ("wyr" in to_id) or ("outro" in to_id)
 
-    scenes   = data["scenes"]
-    out_dir  = os.path.dirname(timing_json_path)
-    n        = len(scenes)
+    if from_plain and to_split:
+        return "fade", 0.20           # split screen appears
+    if to_reveal:
+        return "fadewhite", 0.15      # white flash → reveal percentages
+    if to_plain or from_reveal:
+        return "fadeblack", 0.20      # dark cut between rounds
+    return "fade", 0.15               # fallback
 
-    # ── Build FFmpeg inputs ────────────────────────────────────────────────────
-    # One -loop 1 -t <dur> -i <frame> per scene, then master.wav last.
-    # Identical frames can repeat (e.g. split_frame used by multiple scenes) —
-    # FFmpeg handles this fine; they are separate input slots.
-    cmd = ["ffmpeg", "-y"]
+
+def _group_scenes(scenes: list) -> list:
+    """
+    Merge consecutive scenes that share the same frame into one segment.
+    Each segment: {frame, duration, first_id, last_id, scenes[]}.
+    """
+    groups = []
     for scene in scenes:
         dur = round(scene["global_end"] - scene["global_start"], 6)
         if dur <= 0:
-            dur = 0.1   # guard against zero-duration scenes
-        cmd += ["-loop", "1", "-framerate", "30", "-t", str(dur),
-                "-i", os.path.abspath(scene["frame"])]
-    cmd += ["-i", os.path.abspath(master_wav)]
+            dur = 0.05
+        if groups and groups[-1]["frame"] == scene["frame"]:
+            groups[-1]["duration"]  = round(groups[-1]["duration"] + dur, 6)
+            groups[-1]["last_id"]   = scene["id"]
+            groups[-1]["scenes"].append(scene)
+        else:
+            groups.append({
+                "frame":    scene["frame"],
+                "duration": dur,
+                "first_id": scene["id"],
+                "last_id":  scene["id"],
+                "scenes":   [scene],
+            })
+    return groups
 
-    # ── Build filter_complex ───────────────────────────────────────────────────
-    # Step 1: scale every input to exactly 1080×1920 (safety net for any
-    #         frame that differs in size)
-    scale_parts = []
+
+def _build_filtergraph(groups: list, ass_escaped: str) -> str:
+    """
+    Builds the filter_complex string:
+      1. Scale each group's input to 1080×1920.
+      2. Chain xfade between every consecutive group pair.
+      3. Burn ASS subtitles on the combined stream.
+
+    xfade offset math:
+      After each xfade, the output timeline grows by (seg_duration - xf_dur).
+      The NEXT xfade's offset = current accumulated output length - next xf_dur.
+    """
+    n      = len(groups)
+    lines  = []
+
+    # Step 1 — scale all inputs
     for i in range(n):
-        scale_parts.append(
+        lines.append(
             f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
-            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2[vs{i}]"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[vs{i}]"
         )
 
-    # Step 2: concat scaled streams
-    concat_inputs = "".join(f"[vs{i}]" for i in range(n))
-    concat_part   = f"{concat_inputs}concat=n={n}:v=1:a=0[vconcat]"
+    if n == 1:
+        lines.append(f"[vs0]ass='{ass_escaped}'[vout]")
+        return ";\n".join(lines)
 
-    # Step 3: burn subtitles (ASS path — colon must be escaped on all platforms)
+    # Step 2 — chain xfades
+    # timeline_end tracks where the OUTPUT stream currently ends
+    timeline_end = groups[0]["duration"]
+    prev_label   = "vs0"
+
+    for k in range(1, n):
+        xf_name, xf_dur = _pick_transition(groups[k-1]["last_id"],
+                                            groups[k]["first_id"])
+        # Clamp so transition never exceeds 80% of the shorter segment
+        xf_dur = min(xf_dur,
+                     groups[k-1]["duration"] * 0.8,
+                     groups[k]["duration"]   * 0.8)
+        offset    = max(0.0, round(timeline_end - xf_dur, 6))
+        out_label = f"xf{k}" if k < n - 1 else "vcombined"
+
+        lines.append(
+            f"[{prev_label}][vs{k}]xfade=transition={xf_name}:"
+            f"duration={xf_dur:.4f}:offset={offset:.4f}[{out_label}]"
+        )
+        timeline_end += groups[k]["duration"] - xf_dur
+        prev_label    = out_label
+
+    # Step 3 — burn subtitles
+    lines.append(f"[vcombined]ass='{ass_escaped}'[vout]")
+    return ";\n".join(lines)
+
+
+def render_video(timing_json_path: str, master_wav: str, master_ass: str,
+                 final_out: str) -> str:
+    """Renders the final video. Returns path to final_out."""
+    with open(timing_json_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    scenes  = data["scenes"]
+    out_dir = os.path.dirname(timing_json_path)
+    groups  = _group_scenes(scenes)
+    n       = len(groups)
+
+    print(f"  [render] {len(scenes)} scenes → {n} segments "
+          f"(merged same-frame) + {n-1} xfade transitions")
+
+    # ── FFmpeg inputs: one per SEGMENT (not per scene) ────────────────────────
+    cmd = ["ffmpeg", "-y"]
+    for grp in groups:
+        cmd += ["-loop", "1", "-framerate", "30",
+                "-t", str(grp["duration"]),
+                "-i", os.path.abspath(grp["frame"])]
+    cmd += ["-i", os.path.abspath(master_wav)]
+
+    # ── Filtergraph ────────────────────────────────────────────────────────────
     ass_abs     = os.path.abspath(master_ass)
     ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:")
-    ass_part    = f"[vconcat]ass='{ass_escaped}'[vout]"
+    filter_graph = _build_filtergraph(groups, ass_escaped)
 
-    filter_graph = ";\n".join(scale_parts + [concat_part, ass_part])
-
-    # Write filter to file to avoid OS arg-length limits
     filter_file = os.path.join(out_dir, "filter_complex.txt")
     with open(filter_file, "w", encoding="utf-8") as f:
         f.write(filter_graph)
 
-    # ── Assemble final command ─────────────────────────────────────────────────
+    # ── Encode ────────────────────────────────────────────────────────────────
     cmd += [
         "-filter_complex_script", filter_file,
         "-map", "[vout]",
-        "-map", f"{n}:a",          # master.wav is input index n
+        "-map", f"{n}:a",
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart",  # web-friendly: moov atom at front
+        "-movflags", "+faststart",
         final_out,
     ]
 
-    print(f"  [render] Single-pass FFmpeg render ({n} scenes → {final_out})...")
+    print(f"  [render] Rendering with transitions → {final_out}...")
     _run(cmd, label="render")
     print(f"  [render] Done: {final_out}")
     return final_out

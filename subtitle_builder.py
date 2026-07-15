@@ -138,9 +138,14 @@ def _cue(y: int, fs: int, start: float, end: float,
     # Ensure cue has at least 80ms of display time
     if end - start < 0.08:
         end = start + 0.08
+    # Pop animation: scale from 5% → 100% in 80ms via libass \t() transform.
+    # \fscx / \fscy are X/Y scale percentages. \t(t1,t2,\tag) animates tag
+    # linearly from t1ms to t2ms. This is handled by the subtitle renderer
+    # (libass) — zero additional encoding cost.
+    pop = r"{\fscx5\fscy5\t(0,80,1,\fscx100\fscy100)}"
     return (
         f"Dialogue: 0,{_ts(start)},{_ts(end)},Default,,0,0,0,,"
-        f"{{\\an5\\pos(540,{y})\\fs{fs}\\fad(60,60)}}{text}\n"
+        f"{{\\an5\\pos(540,{y})\\fs{fs}\\fad(0,60)}}{pop}{text}\n"
     )
 
 
