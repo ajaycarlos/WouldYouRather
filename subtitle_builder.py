@@ -15,6 +15,7 @@ the image box), not at the image mid-point.
 """
 import json
 import os
+import shutil
 
 # ── ASS constants ──────────────────────────────────────────────────────────────
 COLOR_HEX = {   # ASS BGR order (\&HBBGGRR\&)
@@ -41,15 +42,15 @@ ANCHOR_Y = {
     "bottom_half": 1730,  # colour strip below Option B image
 }
 ANCHOR_FS = {
-    "center":      130,
-    "top_half":    90,
-    "bottom_half": 90,
+    "center":      150,   # big impact on plain dark screen
+    "top_half":    115,   # punchy inside colour strip
+    "bottom_half": 115,
 }
-# Max words per cue — smart chunking respects natural breaks first
+# Hard cap at 2 words per cue — maximum punch, maximum retention
 ANCHOR_MAX_WORDS = {
-    "center":      4,
-    "top_half":    5,
-    "bottom_half": 5,
+    "center":      2,
+    "top_half":    2,
+    "bottom_half": 2,
 }
 
 ASS_HEADER = """\
@@ -61,7 +62,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Poppins Bold,110,&HFFFFFF&,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,8,0,5,40,40,40,1
+Style: Default,Fredoka,110,&HFFFFFF&,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,9,0,5,40,40,40,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -138,14 +139,15 @@ def _cue(y: int, fs: int, start: float, end: float,
     # Ensure cue has at least 80ms of display time
     if end - start < 0.08:
         end = start + 0.08
-    # Pop animation: scale from 5% → 100% in 80ms via libass \t() transform.
-    # \fscx / \fscy are X/Y scale percentages. \t(t1,t2,\tag) animates tag
-    # linearly from t1ms to t2ms. This is handled by the subtitle renderer
-    # (libass) — zero additional encoding cost.
-    pop = r"{\fscx5\fscy5\t(0,80,1,\fscx100\fscy100)}"
+    # Pop animation:
+    #   Start at 55% scale (clearly smaller — viewer sees the growth)
+    #   Animate to 108% in 200ms (overshoot = elastic "boing" feel)
+    #   libass \t(t1_ms, t2_ms, tags) — handled by renderer, zero encode cost
+    #   No accel param → linear; overshoot to 108 gives perceived snap
+    pop = r"{\fscx55\fscy55\t(0,200,\fscx108\fscy108)}"
     return (
         f"Dialogue: 0,{_ts(start)},{_ts(end)},Default,,0,0,0,,"
-        f"{{\\an5\\pos(540,{y})\\fs{fs}\\fad(0,60)}}{pop}{text}\n"
+        f"{{\\an5\\pos(540,{y})\\fs{fs}}}{pop}{text}\n"
     )
 
 
@@ -186,6 +188,13 @@ def build_subtitles(timing_json_path: str, out_dir: str) -> str:
     ass_path = os.path.join(out_dir, "master.ass")
     with open(ass_path, "w", encoding="utf-8") as f:
         f.writelines(ass_lines)
+
+    # Copy the Fredoka font into out_dir so fontsdir always resolves it
+    import config as _cfg
+    font_src  = _cfg.FONT_PATH
+    font_dest = os.path.join(out_dir, os.path.basename(font_src))
+    if not os.path.isfile(font_dest):
+        shutil.copy2(font_src, font_dest)
 
     cue_count = sum(1 for l in ass_lines if l.startswith("Dialogue"))
     print(f"  [subtitles] master.ass written ({cue_count} cues)")

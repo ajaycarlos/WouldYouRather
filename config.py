@@ -34,43 +34,43 @@ PERCENT_SPLIT_MAX = int(os.getenv("PERCENT_SPLIT_MAX", "82"))  # winning side's 
 
 
 # ── Font resolution ───────────────────────────────────────────────────────────
-# Try the user-configured path first, then common system locations, then
-# download Poppins-Bold from the Google Fonts GitHub mirror as a last resort.
-# A missing font causes PIL to fall back to an 8px bitmap that ignores size and
-# stroke — the root cause of the invisible/tiny percentage text bug.
+# Fredoka One: rounded, bold, perfect for YouTube Shorts punch-text style.
+# Falls back to Poppins-Bold if already present, then auto-downloads Fredoka.
 
 _FONT_SEARCH_PATHS = [
+    os.path.join(os.path.dirname(__file__), "FredokaOne-Regular.ttf"),
+    os.path.expanduser("~/.fonts/FredokaOne-Regular.ttf"),
+    # Poppins fallback (already downloaded in a previous session)
     os.path.expanduser(os.getenv("FONT_PATH", "~/.fonts/Poppins-Bold.ttf")),
-    "/usr/share/fonts/truetype/poppins/Poppins-Bold.ttf",
-    "/usr/share/fonts/poppins/Poppins-Bold.ttf",
     os.path.join(os.path.dirname(__file__), "Poppins-Bold.ttf"),
 ]
 
-_POPPINS_URL = (
-    "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf"
+_FREDOKA_URL = (
+    "https://github.com/google/fonts/raw/main/ofl/fredokaone/FredokaOne-Regular.ttf"
 )
 
 
 def _resolve_font() -> str:
-    # 1. Try known paths
+    # 1. Try known paths (Fredoka One first, Poppins as fallback)
     for path in _FONT_SEARCH_PATHS:
         if path and os.path.isfile(path):
+            print(f"[config] Font: {os.path.basename(path)}")
             return path
 
-    # 2. Auto-download to project root
-    local_path = os.path.join(os.path.dirname(__file__), "Poppins-Bold.ttf")
-    print(f"[config] Poppins-Bold.ttf not found — downloading from Google Fonts...")
+    # 2. Auto-download Fredoka One to project root
+    local_path = os.path.join(os.path.dirname(__file__), "FredokaOne-Regular.ttf")
+    print("[config] FredokaOne-Regular.ttf not found — downloading from Google Fonts...")
     try:
-        urllib.request.urlretrieve(_POPPINS_URL, local_path)
+        urllib.request.urlretrieve(_FREDOKA_URL, local_path)
         if os.path.isfile(local_path) and os.path.getsize(local_path) > 10_000:
             print(f"[config] Font saved to {local_path}")
             return local_path
-    except Exception as e:
-        pass  # fall through to error below
+    except Exception:
+        pass
 
     raise RuntimeError(
-        "Could not locate or download Poppins-Bold.ttf.\n"
-        "Fix: run  mkdir -p ~/.fonts && cp /path/to/Poppins-Bold.ttf ~/.fonts/\n"
+        "Could not locate or download FredokaOne-Regular.ttf.\n"
+        "Fix: place FredokaOne-Regular.ttf in the project directory\n"
         "     or set FONT_PATH=/absolute/path/to/any-bold.ttf in your .env"
     )
 

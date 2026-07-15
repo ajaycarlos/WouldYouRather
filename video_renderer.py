@@ -74,7 +74,8 @@ def _group_scenes(scenes: list) -> list:
     return groups
 
 
-def _build_filtergraph(groups: list, ass_escaped: str) -> str:
+def _build_filtergraph(groups: list, ass_escaped: str,
+                        fonts_escaped: str = "") -> str:
     """
     Builds the filter_complex string:
       1. Scale each group's input to 1080×1920.
@@ -96,7 +97,8 @@ def _build_filtergraph(groups: list, ass_escaped: str) -> str:
         )
 
     if n == 1:
-        lines.append(f"[vs0]ass='{ass_escaped}'[vout]")
+        fd = f":fontsdir='{fonts_escaped}'" if fonts_escaped else ""
+        lines.append(f"[vs0]ass='{ass_escaped}'{fd}[vout]")
         return ";\n".join(lines)
 
     # Step 2 — chain xfades
@@ -121,8 +123,9 @@ def _build_filtergraph(groups: list, ass_escaped: str) -> str:
         timeline_end += groups[k]["duration"] - xf_dur
         prev_label    = out_label
 
-    # Step 3 — burn subtitles
-    lines.append(f"[vcombined]ass='{ass_escaped}'[vout]")
+    # Step 3 — burn subtitles with fontsdir so libass finds bundled font
+    fd = f":fontsdir='{fonts_escaped}'" if fonts_escaped else ""
+    lines.append(f"[vcombined]ass='{ass_escaped}'{fd}[vout]")
     return ";\n".join(lines)
 
 
@@ -149,9 +152,14 @@ def render_video(timing_json_path: str, master_wav: str, master_ass: str,
     cmd += ["-i", os.path.abspath(master_wav)]
 
     # ── Filtergraph ────────────────────────────────────────────────────────────
+    # ASS filter with fontsdir so libass finds our bundled Fredoka font
+    # without requiring it to be installed system-wide.
     ass_abs     = os.path.abspath(master_ass)
-    ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:")
-    filter_graph = _build_filtergraph(groups, ass_escaped)
+    fonts_dir   = os.path.dirname(os.path.abspath(master_ass))
+    # On Linux: colons in path need escaping for ffmpeg filter options
+    ass_escaped   = ass_abs.replace("\\", "/").replace(":", "\\:")
+    fonts_escaped = fonts_dir.replace("\\", "/").replace(":", "\\:")
+    filter_graph  = _build_filtergraph(groups, ass_escaped, fonts_escaped)
 
     filter_file = os.path.join(out_dir, "filter_complex.txt")
     with open(filter_file, "w", encoding="utf-8") as f:
