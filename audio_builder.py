@@ -21,6 +21,8 @@ import wave
 import edge_tts
 import config
 from retry_utils import retry
+import array
+import sound_fx
 
 # ── PCM constants ─────────────────────────────────────────────────────────────
 RATE     = 44100   # Hz
@@ -64,6 +66,32 @@ def _trim_or_pad_pcm(pcm: bytes, target_seconds: float) -> bytes:
     if len(pcm) >= target:
         return pcm[:target]
     return pcm + bytes(target - len(pcm))
+
+
+def _mix_pcm(target: bytearray, src: bytes, offset_sec: float):
+    """Mathematically adds src PCM into target bytearray at offset_sec."""
+    offset_bytes = int(offset_sec * BYTES_PER_SEC)
+    # Ensure even alignment for 16-bit
+    if offset_bytes % 2 != 0:
+        offset_bytes -= 1
+        
+    end_bytes = offset_bytes + len(src)
+    
+    # Pad target if src extends beyond it
+    if end_bytes > len(target):
+        target.extend(bytes(end_bytes - len(target)))
+        
+    # Read as 16-bit signed integers
+    target_arr = array.array('h', target[offset_bytes:end_bytes])
+    src_arr    = array.array('h', src)
+    
+    # Mix and clip
+    for i in range(len(target_arr)):
+        val = target_arr[i] + src_arr[i]
+        target_arr[i] = max(-32768, min(32767, val))
+        
+    # Write back
+    target[offset_bytes:end_bytes] = target_arr.tobytes()
 
 
 # ── TTS ────────────────────────────────────────────────────────────────────────
@@ -152,11 +180,15 @@ def build_master_audio(scenes: list, out_dir: str) -> str:
       word_timings  (list of {word, start, end} — globally offset)
     """
     os.makedirs(out_dir, exist_ok=True)
-    master_pcm = b""
+    master_pcm = bytearray()
     cursor     = 0.0
+    
+    # Queue of (sfx_func, offset_seconds) to mix in after building the base track
+    sfx_queue = []
 
     for scene in scenes:
         scene_start = cursor
+        scene_id = scene.get("id", "")
 
         if scene.get("narration"):
             text = scene["narration"]
@@ -177,14 +209,23 @@ def build_master_audio(scenes: list, out_dir: str) -> str:
                 for wt in rel_timings
             ]
 
-            master_pcm += pcm
-            cursor     += duration
+            master_pcm.extend(pcm)
+            
+            # Queue SFX based on scene type
+            if "option_a" in scene_id or "option_b" in scene_id:
+                sfx_queue.append((sound_fx.generate_whoosh, cursor))
+            elif "or" in scene_id:
+                sfx_queue.append((sound_fx.generate_boom, cursor))
+            elif "reveal" in scene_id:
+                sfx_queue.append((sound_fx.generate_ding, cursor))
+
+            cursor += duration
 
         elif scene.get("sfx") == "tick":
             dur = float(scene.get("sfx_duration", config.TIMER_SECONDS))
             print(f"  [audio] {scene['id']}: tick SFX {dur}s")
             pcm         = _tick_pcm(dur)
-            master_pcm += pcm
+            master_pcm.extend(pcm)
             cursor     += dur
             global_timings = []
 
@@ -194,6 +235,16 @@ def build_master_audio(scenes: list, out_dir: str) -> str:
         scene["global_start"] = round(scene_start, 6)
         scene["global_end"]   = round(cursor,       6)
         scene["word_timings"] = global_timings
+
+    # Mix queued SFX over the voice/tick track
+    if sfx_queue:
+        print(f"  [audio] Mixing {len(sfx_queue)} sound effects into master track...")
+        # cache generated SFX to save FFmpeg calls (whoosh, boom, ding are identical every time)
+        sfx_cache = {}
+        for sfx_func, offset in sfx_queue:
+            if sfx_func not in sfx_cache:
+                sfx_cache[sfx_func] = sfx_func()
+            _mix_pcm(master_pcm, sfx_cache[sfx_func], offset)
 
     # Write master audio
     wav_path = os.path.join(out_dir, "master.wav")
