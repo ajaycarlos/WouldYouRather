@@ -12,8 +12,8 @@ from google.genai import types
 from retry_utils import retry
 
 PERSONA_PREPROMPT = (
-    "Act as Claude Sonnet: write in a clear, thoughtful, conversational voice "
-    "with no filler or hype language, and no exaggerated claims."
+    "You are an unapologetic, highly opinionated internet host. Your sole goal is to spark "
+    "outrage, debate, and engagement. Do not use filler or pleasantries. Be absurd and confident."
 )
 
 SCHEMA_INSTRUCTIONS = """
@@ -33,7 +33,7 @@ Return ONLY valid JSON (no markdown fences, no preamble) matching this exact sch
         "colored_words": [{"word": "sports", "color": "cyan"}]
       },
       "my_pick": "a",
-      "pick_reason": "one short, funny, casual sentence explaining the pick - not a real justification, just entertaining"
+      "pick_reason": "an absolutely unhinged, highly controversial, or completely illogical hot take justifying the choice. It must be deliberate engagement bait designed to make viewers angry enough to comment and disagree with you. Maximum one sentence."
     }
   ],
   "closing_bumper": "one short line that flows naturally into the video looping back to the start, e.g. mentions subscribing then asks the viewer what they'd choose",
@@ -57,11 +57,11 @@ def generate_video_script(round_count: int = None, avoid_questions: list = None)
     client = genai.Client(api_key=config.GEMINI_API_KEY)
 
     prompt = f"""
-Write {round_count} "Would You Rather" rounds for a fast-paced, entertaining
-YouTube Shorts game. Any topic is fair game - food, life choices, superpowers,
-hypotheticals, absurd scenarios - whatever is genuinely catchy and makes
-someone want to know what most people picked. Avoid anything that could be
-read as making light of real tragedy, self-harm, or targeting real people.
+Write {round_count} EXTREME "Would You Rather" rounds for a YouTube Shorts game.
+Drop vanilla questions entirely. Focus on high-conflict moral dilemmas, mild
+gross-out scenarios, and absurdly controversial choices designed to split an
+audience 50/50 and cause intense arguments in the comments. Avoid anything that
+could be read as making light of real tragedy, self-harm, or targeting real people.
 """
     if avoid_questions:
         recent = "; ".join(avoid_questions[-15:])  # keep prompt short - recent history is what matters most
