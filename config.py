@@ -23,7 +23,7 @@ MANUAL_REVIEW_GATE = os.getenv("MANUAL_REVIEW_GATE", "False").lower() == "true"
 # don't contend for CPU/network if their runs overlap.
 PUBLISH_HOUR_UTC = int(os.getenv("PUBLISH_HOUR_UTC", "16"))
 
-TIMER_SECONDS = float(os.getenv("TIMER_SECONDS", "3.0"))
+TIMER_SECONDS = float(os.getenv("TIMER_SECONDS", "2.0"))
 
 OUTPUT_DIR = "output"
 
