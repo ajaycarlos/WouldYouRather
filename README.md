@@ -1,4 +1,4 @@
-# Would You Rather - Automated Shorts Pipeline
+# Would You Rather - Automated Shorts Pipeline 
 
 Generates split-screen "Would You Rather" game videos: plain-background intro
 per round → split-screen question with images → timer tick sound → percentage
@@ -69,3 +69,6 @@ periodically since this runs unattended.
 ## Not yet built
 
 - GitHub Actions workflow (same pattern as channels 1 & 2 - add when ready)
+
+
+--LAST PUSH BEFORE RETENTION ENGINE + HIGH-RETENTION SHORTS GENERATION SYSTEM--
