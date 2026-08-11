@@ -11,6 +11,7 @@ import os
 import visual_gen
 import image_fetch
 import percentage_gen
+import config
 
 
 def _cmap(colored_words: list) -> dict:
@@ -46,7 +47,8 @@ def build_timeline(script_data: dict, out_dir: str) -> dict:
         )
 
         picked      = opt_a if round_data["my_pick"] == "a" else opt_b
-        reveal_text = f"I'm going with {picked['text']}. {round_data['pick_reason']}"
+        # Short, punchy reveal — skip the slow "I'm going with..." preamble
+        reveal_text = f"I pick {picked['text']}! {round_data['pick_reason']}"
 
         scenes += [
             {
@@ -91,7 +93,7 @@ def build_timeline(script_data: dict, out_dir: str) -> dict:
                 "frame":           split_frame,
                 "narration":       None,
                 "sfx":             "tick",
-                "sfx_duration":    3.0,
+                "sfx_duration":    config.TIMER_SECONDS,
                 "subtitle_anchor": None,
                 "color_map":       {},
             },

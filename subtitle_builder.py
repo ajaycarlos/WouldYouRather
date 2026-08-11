@@ -37,21 +37,24 @@ HIGHLIGHT_COLOR = "&H00FFFF&"  # standard yellow
 # Divider / OR badge:  y = 960
 # Bottom image:        y ∈ [1200,1680]
 # Bottom colour strip: y ∈ [1680,1920] → centre y = 1800
+# visual_gen canvas: 1080×1920, HALF_H=960, IMG_H=480, IMG_PAD_V=240
+# Top colour strip:    y ∈ [0,   240]  → safe centre y = 200 (clear of top edge at fs=95)
+# Bottom colour strip: y ∈ [1680,1920] → safe centre y = 1760
 ANCHOR_Y = {
     "center":      960,   # plain dark background — dead centre
-    "top_half":    120,   # colour strip above Option A image
-    "bottom_half": 1800,  # colour strip below Option B image
+    "top_half":    200,   # FIXED: was 120 → caused subtitle to clip above canvas top
+    "bottom_half": 1760,  # colour strip below Option B image
 }
 ANCHOR_FS = {
-    "center":      150,   # big impact on plain dark screen
-    "top_half":    115,   # punchy inside colour strip
-    "bottom_half": 115,
+    "center":      140,   # big impact on plain dark screen
+    "top_half":    95,    # FIXED: was 115 → at 110% pop overshoot clips top edge
+    "bottom_half": 95,
 }
-# Group subtitles according to natural speech (Issue 5 fix)
+# Keep captions punchy — 4 words max per cue
 ANCHOR_MAX_WORDS = {
-    "center":      5,
-    "top_half":    5,
-    "bottom_half": 5,
+    "center":      4,
+    "top_half":    4,
+    "bottom_half": 4,
 }
 
 ASS_HEADER = """\
